@@ -1,0 +1,21 @@
+## Archivos compilados
+bin/
+obj/
+
+## Archivos de configuración de usuario
+appsettings.Development.json
+*.user
+*.suo
+
+## Paquetes NuGet
+packages/
+
+## Visual Studio
+.vs/
+*.csproj.user
+*.dbmdl
+*.dbml
+*.log
+
+## Carpetas de publicación
+Publish/
