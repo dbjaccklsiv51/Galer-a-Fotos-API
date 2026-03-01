@@ -1,199 +1,219 @@
-﻿using Json_Demo;  // Para JsonHelper
-using Json_Demo.Models;
-using Microsoft.AspNetCore.Mvc;
+﻿using Microsoft.AspNetCore.Mvc;
 using System.Text.Json;
+using GaleriaFotosAPI.Models;
 
-namespace Json_Demo.Controllers
+namespace GaleriaFotosAPI.Controllers
 {
     [Route("api/fotos")]
     [ApiController]
     public class FotosController : ControllerBase
     {
-        private readonly HttpClient _httpClient;
-        private const string BaseUrl = "https://jsonplaceholder.typicode.com";
+        private readonly IHttpClientFactory _httpClientFactory;
+        private readonly JsonSerializerOptions _jsonOptions = new() { PropertyNameCaseInsensitive = true };
 
-        public FotosController()
+        public FotosController(IHttpClientFactory httpClientFactory)
         {
-            _httpClient = new HttpClient();
-            _httpClient.BaseAddress = new Uri(BaseUrl);
+            _httpClientFactory = httpClientFactory;
         }
 
-        // GET: api/fotos/album/1
         [HttpGet("album/{albumId}")]
-        public async Task<IActionResult> GetFotosPorAlbum(int albumId)
+        public async Task<ActionResult<AlbumResponse>> GetAlbum(int albumId)
         {
-            // Validar albumId
+            // 1. Validación
             if (albumId < 1 || albumId > 100)
             {
                 return BadRequest(new
                 {
-                    error = "El albumId debe estar entre 1 y 100",
-                    sugerencia = "Valores válidos: 1, 2, 3, ..., 100"
+                    error = "El albumId debe estar entre 1 y 100.",
+                    valoresValidos = "1-100"
                 });
             }
 
-            // Consultar API externa
-            var response = await _httpClient.GetAsync($"photos?albumId={albumId}");
+            // 2. Obtener cliente HTTP
+            var client = _httpClientFactory.CreateClient("JSONPlaceholder");
+            var response = await client.GetAsync($"photos?albumId={albumId}");
+
             if (!response.IsSuccessStatusCode)
             {
-                return StatusCode(500, "Error al consultar el servicio externo");
+                // Si la API externa falla, devolvemos error 500 (o lo que corresponda)
+                return StatusCode((int)response.StatusCode, "Error al consultar la API externa.");
             }
 
             var json = await response.Content.ReadAsStringAsync();
-            var fotos = JsonSerializer.Deserialize<List<Foto>>(json);
+            var fotos = JsonSerializer.Deserialize<List<Foto>>(json, _jsonOptions);
 
+            // 3. Si no hay fotos
             if (fotos == null || fotos.Count == 0)
             {
-                return NotFound(new
-                {
-                    mensaje = $"El álbum {albumId} no tiene fotos o no existe."
-                });
+                return NotFound($"El álbum {albumId} no contiene fotos.");
             }
 
-            var fotosTransformadas = fotos.Select(f => new
+            // 4. Transformar
+            var items = fotos.Select(f => new FotoAlbumItem
             {
-                f.Id,
-                titulo = f.Title,
-                albumId = f.AlbumId,
-                urlCompleta = f.Url,
-                miniatura = f.ThumbnailUrl,
-                tamanio = "Completa"
+                Id = f.Id,
+                Titulo = f.Title,
+                AlbumId = f.AlbumId,
+                UrlCompleta = f.Url,
+                Miniatura = f.ThumbnailUrl,
+                Tamanio = "Completa"
             }).ToList();
 
-            var resultado = new
+            // 5. Respuesta
+            var resultado = new AlbumResponse
             {
-                albumId = albumId,
-                totalFotos = fotosTransformadas.Count,
-                fotos = fotosTransformadas
+                AlbumId = albumId,
+                TotalFotos = items.Count,
+                Fotos = items
             };
 
-            return Ok(JsonHelper.ToJson(resultado));
+            return Ok(resultado);
         }
-
-        // GET: api/fotos/buscar?palabra=accusamus
         [HttpGet("buscar")]
-        public async Task<IActionResult> BuscarFotos([FromQuery] string palabra)
+        public async Task<ActionResult<BusquedaResponse>> BuscarFotos([FromQuery] string palabra)
         {
+            // 1. Validación
             if (string.IsNullOrWhiteSpace(palabra))
             {
-                return BadRequest(new { error = "Debe proporcionar una palabra para buscar." });
+                return BadRequest(new { error = "Debe proporcionar una palabra de búsqueda." });
             }
 
-            var response = await _httpClient.GetAsync("photos");
+            var client = _httpClientFactory.CreateClient("JSONPlaceholder");
+
+            // 2. Obtener todas las fotos (5000)
+            var response = await client.GetAsync("photos");
             if (!response.IsSuccessStatusCode)
             {
-                return StatusCode(500, "Error al obtener las fotos del servicio externo.");
+                return StatusCode((int)response.StatusCode, "Error al consultar la API externa.");
             }
 
             var json = await response.Content.ReadAsStringAsync();
-            var todasLasFotos = JsonSerializer.Deserialize<List<Foto>>(json);
+            var todasLasFotos = JsonSerializer.Deserialize<List<Foto>>(json, _jsonOptions) ?? new List<Foto>();
 
+            // 3. Filtrar por título (case-insensitive)
+            var palabraLower = palabra.ToLower();
             var fotosFiltradas = todasLasFotos
-                .Where(f => f.Title.Contains(palabra, StringComparison.OrdinalIgnoreCase))
+                .Where(f => f.Title != null && f.Title.ToLower().Contains(palabraLower))
                 .ToList();
 
             int totalEncontradas = fotosFiltradas.Count;
 
-            var fotosLimitadas = fotosFiltradas
-                .Take(20)
-                .Select(f => new
-                {
-                    f.Id,
-                    titulo = f.Title,
-                    tituloDestacado = f.Title.Replace(palabra, $"**{palabra}**", StringComparison.OrdinalIgnoreCase),
-                    albumId = f.AlbumId,
-                    miniatura = f.ThumbnailUrl
-                })
-                .ToList();
+            // 4. Tomar máximo 20
+            var fotosLimitadas = fotosFiltradas.Take(20).ToList();
 
-            var resultado = new
+            // 5. Crear items con título destacado
+            var items = fotosLimitadas.Select(f =>
             {
-                palabraBuscada = palabra,
-                totalEncontradas = totalEncontradas,
-                totalMostradas = fotosLimitadas.Count,
-                fotos = fotosLimitadas
+                // Resaltar la palabra en el título (reemplazo simple, sensible a mayúsculas)
+                // Usamos Regex para reemplazar todas las ocurrencias, ignorando mayúsculas
+                var tituloDestacado = System.Text.RegularExpressions.Regex.Replace(
+                    f.Title,
+                    palabra,
+                    $"**{palabra}**",
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase
+                );
+
+                return new FotoBusquedaItem
+                {
+                    Id = f.Id,
+                    Titulo = f.Title,
+                    TituloDestacado = tituloDestacado,
+                    AlbumId = f.AlbumId,
+                    Miniatura = f.ThumbnailUrl
+                };
+            }).ToList();
+
+            // 6. Respuesta
+            var resultado = new BusquedaResponse
+            {
+                PalabraBuscada = palabra,
+                TotalEncontradas = totalEncontradas,
+                TotalMostradas = items.Count,
+                Fotos = items
             };
 
-            return Ok(JsonHelper.ToJson(resultado));
+            return Ok(resultado);
         }
-
-        // GET: api/fotos/aleatoria
         [HttpGet("aleatoria")]
-        public async Task<IActionResult> FotoAleatoria()
+        public async Task<ActionResult<FotoAleatoriaResponse>> FotoAleatoria()
         {
+            var client = _httpClientFactory.CreateClient("JSONPlaceholder");
+            var random = new Random();
             const int maxIntentos = 3;
-            int intentos = 0;
             Foto foto = null;
 
-            while (intentos < maxIntentos && foto == null)
+            for (int intento = 0; intento < maxIntentos; intento++)
             {
-                intentos++;
-                int idAleatorio = Random.Shared.Next(1, 5001);
-                var response = await _httpClient.GetAsync($"photos/{idAleatorio}");
+                int id = random.Next(1, 5001); // 1 a 5000 inclusive
+                var response = await client.GetAsync($"photos/{id}");
 
                 if (response.IsSuccessStatusCode)
                 {
                     var json = await response.Content.ReadAsStringAsync();
-                    foto = JsonSerializer.Deserialize<Foto>(json);
-                }
-                else if ((int)response.StatusCode != 404)
-                {
-                    return StatusCode(500, "Error al consultar la API externa.");
+                    foto = JsonSerializer.Deserialize<Foto>(json, _jsonOptions);
+                    break; // éxito, salimos del bucle
                 }
             }
 
             if (foto == null)
             {
-                return StatusCode(500, "No se pudo obtener una foto válida después de varios intentos.");
+                return StatusCode(500, "No se pudo obtener una foto aleatoria después de varios intentos.");
             }
 
-            var resultado = new
+            var resultado = new FotoAleatoriaResponse
             {
-                mensaje = "¡Foto del día!",
-                foto = new
+                Mensaje = "¡Foto del día!",
+                Foto = new FotoAleatoriaItem
                 {
-                    foto.Id,
-                    titulo = foto.Title,
-                    albumId = foto.AlbumId,
-                    urlCompleta = foto.Url,
-                    miniatura = foto.ThumbnailUrl
+                    Id = foto.Id,
+                    Titulo = foto.Title,
+                    AlbumId = foto.AlbumId,
+                    UrlCompleta = foto.Url,
+                    Miniatura = foto.ThumbnailUrl
                 },
-                sugerencia = $"También puedes ver el álbum completo: /api/fotos/album/{foto.AlbumId}"
+                Sugerencia = $"También puedes ver el álbum completo: /api/fotos/album/{foto.AlbumId}"
             };
 
-            return Ok(JsonHelper.ToJson(resultado));
+            return Ok(resultado);
         }
-
-        // GET: api/fotos/album/1/resumen
         [HttpGet("album/{albumId}/resumen")]
-        public async Task<IActionResult> ResumenAlbum(int albumId)
+        public async Task<ActionResult<ResumenAlbumResponse>> ResumenAlbum(int albumId)
         {
-            var response = await _httpClient.GetAsync($"photos?albumId={albumId}");
+            // Validar albumId (opcional, podemos permitir cualquier número)
+            if (albumId < 1)
+            {
+                return BadRequest("El albumId debe ser un número positivo.");
+            }
+
+            var client = _httpClientFactory.CreateClient("JSONPlaceholder");
+            var response = await client.GetAsync($"photos?albumId={albumId}");
+
             if (!response.IsSuccessStatusCode)
             {
-                return StatusCode(500, "Error al consultar el servicio externo.");
+                return StatusCode((int)response.StatusCode, "Error al consultar la API externa.");
             }
 
             var json = await response.Content.ReadAsStringAsync();
-            var fotos = JsonSerializer.Deserialize<List<Foto>>(json);
+            var fotos = JsonSerializer.Deserialize<List<Foto>>(json, _jsonOptions);
 
             if (fotos == null || fotos.Count == 0)
             {
-                return NotFound(new { mensaje = $"El álbum {albumId} no existe o no tiene fotos." });
+                return NotFound($"El álbum {albumId} no contiene fotos.");
             }
 
+            // Tomar las primeras 5 miniaturas
             var muestras = fotos.Take(5).Select(f => f.ThumbnailUrl).ToList();
-            var primeraFoto = fotos.First().Url;
 
-            var resultado = new
+            var resultado = new ResumenAlbumResponse
             {
-                albumId = albumId,
-                totalFotos = fotos.Count,
-                muestras = muestras,
-                primeraFoto = primeraFoto
+                AlbumId = albumId,
+                TotalFotos = fotos.Count,
+                Muestras = muestras,
+                PrimeraFoto = fotos.First().Url
             };
 
-            return Ok(JsonHelper.ToJson(resultado));
+            return Ok(resultado);
         }
+        // Métodos de los endpoints (se desarrollan a continuación)
     }
 }

@@ -11,7 +11,15 @@ namespace Galería_de_Fotos__endpoint_photos_
 
             builder.Services.AddControllers();
             // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
+
+
             builder.Services.AddOpenApi();
+
+            builder.Services.AddHttpClient("JSONPlaceholder", client =>
+            {
+                client.BaseAddress = new Uri("https://jsonplaceholder.typicode.com/");
+                client.DefaultRequestHeaders.Add("Accept", "application/json");
+            });
 
             var app = builder.Build();
 
